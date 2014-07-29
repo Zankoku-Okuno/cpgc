@@ -1,0 +1,52 @@
+gcobj is handle to gateway
+gateway is handle to managed data
+
+gateway
+	non-null data ptr
+	size of data
+	marked, pinned
+	optional destructor
+	non-null tracer
+registry
+	all gateways
+	newborn start/end
+tracer
+	stage
+	roots
+	queue
+heap
+	nursery (swap between two instances) (two types: most objects don't have finalizers and can be swept away in a batch, others must be finalized one-by-one)
+	everywhere else, as long as the only pointer into it is through a gateway
+
+// ====== INVARIANTS ====== //
+//Thanks to immutability, no older object references a newer object
+//IoC is accomplished by sending in your own tracer function, whch should simply call gc_mark
+//Data pointed to by a gateway is owned only by that gateway.
+
+// ====== CORE ====== //
+	//manage gc roots
+	gc_root      gc_unroot
+
+	//tracing interface
+	gc_mark
+
+	//work with gc'd objects
+	//copy       //no copy
+	new_gcobj    to_gcobj
+	             ask_gcobj
+	             mut_gcobj
+	from_gcobj   pin_gcobj
+
+// ====== LOW LEVEL ====== //
+	//Setup system.
+	init_gc  destroy_gc
+	//TODO configure parameters
+
+	//Control collection cycles.
+	minor_collect
+	major_collect
+
+// ====== INSTRUMENTATION ====== //
+
+// ====== PACKED ARRAYS ====== //
+// ====== REFERENCES ====== //

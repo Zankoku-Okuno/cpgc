@@ -1,0 +1,67 @@
+obj
+ref
+weakref
+refarr
+
+
++-------------------+  +-------------+
+|                   |  | Stable ptrs |
+|  Referenced data  |  +-------------+
+|                   |
++-------------------+
+
++----------thread-local----------+
+|  +---------+  +-------------+  |
+|  | nursery |  |             |  |
+|  +---------+  | Major Store |  |
+|               |             |  |
+|               |             |  |
+|               +-------------+  |
+|   +---------------------+      |
++---| registry/tombstones |------+
+    +---------------------+
+
+//access objects in the gc_heap
+struct gcobj
+//alloc an immutable object in the heap with the same bit-pattern as x
+gcobj new_gcobj(size_t size, void* x)
+//copy x and apply f to the copy
+gcobj mut_gcobj(gcobj x, void (*f)(void*))
+//copy a gcobj out to a native pointer
+void* from_gcobj(gcobj x)
+
+
+
+mvar   ==> shared memory protected by mutex
+ioref  ==> shared memory
+tvar   ==> shared memory protected by transactions
+tls    ==> local mutable memory
+
+tls  ===> local mutable memory
+mref ===> shared memory protected by mutex
+tref ===> shared memory protected by transactions
+
+
+
+
+
+=============================================
+
+
+struct gcobj {
+	void* data;
+	void (*trace)(tracer* engine, void* obj);
+	void (*destroy)(void* obj);
+}
+//get
+
+struct gcref {
+	void* data;
+}
+//get, put both perform shallow copies
+//modify applies function w/o copy
+//weak refs may return null on get
+
+
+
+===========

@@ -1,0 +1,130 @@
+Garbage collection
+
+Now then, I want: exact, thread-safe, generational, copy-on-write, freshness bit, weak references, foreign references.
+
+Each thread that wants to use garbage collection needs to initialize the gc system. Initialization hands back a pointer to that system's metadata. Locking, if needed at all, perhaps by your interpreter. It needn't be fine-grained, only one thread should be using any given gc system at a time.
+
+We'll need several peices of memory:
+	two plain nursuries:
+		the objects alloc'd here are small, immutable, and have no finalizers
+		if we collect nursuries at frequency f, then we can detect short-lived objects with resolution 2/f.
+	two finalized nursuries:
+		the objects here are small, immutable, but have finalizers
+	tenured space:
+		mutable and large data is stored here, finalizers or not
+		when objects survive two nursury collections, they are moved to tenured space
+		this is alloc'd just with normal malloc (or a threaded version thereof)
+		e.g. the contents of references are alloc'd here, but the references themselves are small, immutable and have a finalizer (which cleans up the content memory from tenured space)
+And we'll need to track memory:
+	a mobile set of root objects
+	a set of all gcrefs
+	a fast alloc'r for gcrefs
+	how much of each nursury is in use
+	how big is tenured space/how long since the last tenure collection
+	a conervative heuristic for which gcrefs are new/touched since last collection (0 false negatives, false positives ok)
+
+gc references will need to be smart pointers:
+	they must be immobile, but point to mobile memory
+	the object's finalizer (if any)
+	freshness bit (reference count if weak reference)
+	mutable or immutable?
+	how to trace the underlying data for more objects		
+		could be an interpreted data
+			an integer for array length (<= 1 for scalars)
+			zero-terminated bytes, each an offset from the last
+		or a custom function:
+			function pointer
+			closure data
+
+gcref operations:
+	new
+	read
+	modify (if not fresh, induces copy)
+	soft copy (unsets fresh)
+	hard copy (makes an actual copy)
+	mut_store, mut_modify (updates )
+
+mutable data 
+	stored in tenured space
+	the pointer can be stored directly by the gcref to reduce seek time
+	gcref also contains last modification time
+
+on nursery collection:
+	starting from
+		root set
+		mutable data that has changed since last collection
+	trace pointers that:
+		go inside the nursery
+		are to mutable objects modified since last collection
+		are foreign references -- TODO should this require getting a lock? what about deadlock? even if I just assume it gets mutated?
+	keep a set of gcrefs with a new freshness bit
+	object gets added fresh, but second addition unsets freshness
+	run finalizers on object in nursery but not traced
+	copy objects out from nursery, updating freshness bit
+	set nursery to empty
+
+on tenure collection:
+	trace everything
+
+communication:
+	foreign references should be updated by the scheduler
+	a thread communicates a threadid and a gcref to the scheduler
+	just before thread treadid is next started, corresponding updates are made to its foreign references (just the gcrefs)
+	foreign references are collected with tenure collection
+
+configuration options:
+	total size of plain nursuries
+	total size of finalized nursuries
+	rules to decide when to do tenure collection
+	turn on profiling
+
+
+TODO
+====
+what exactly are foreign references for?
+	I guess when mutable data is sent to another thread
+how do channels work, then?
+	the creator owns both ends of the channel
+	one end is sent elsewhere
+At the moment, the tenure space collector is stop-the-world mark-and-sweep. It shouldn't be too hard to make it incremental with tri-color.
+compacting
+
+Jargon
+======
+
+gcsys: a garbage collection system meant for use by a single thread (at a time)
+object: piece of memory
+gcref: smart pointer to object
+value: immutable object
+mobj: mutable object
+
+
+Discussion
+==========
+
+With just plain C, there is essentially no facility for dynamic memory management. Dynamic allocation must be programmed as a library by a user of the language. The most common such library is stdlib, which provides malloc/free (and others). The stdlib is supported, in turn, by the operating system, though for a program with bounded memory usage over a long period of time, the link to the OS is an amortized constant-time overhead for the whole program.
+
+The malloc/free interface exposed by stdlib is far from the only possible library for managing dynamic memory. In fact, it is often the subject of complaint because the interface requires its user to manually free memory exactly once and only after it is no longer needed. This constraint adds significant mental overhead during initial development, and severly complicates maintenence of C code and usage of C lirbaries. 
+
+A commonly-used interface which alieviates these concerns about malloc/free is that provided by a precise garbage collector. In many modern languages, this interface is eniterly transparent to the user: it is simply a part of the runtime system. By contrast, C has essentially no runtime system, and so precise garbage collection has yet to have serious adoption in C. However, there is no reason the garbage collection interface need be hidden from the programmer; the interface can be just as explicit as malloc/free, but still reduce or eliminate the amount of manual calls to free.
+
+We develop just such a library. The interface is characterized by gcalloc and gcroot, and uses inversion of control to obtain tracing metadata. Thus, the programmer need only allocate memory, track when pointers escape the gc system, and provide a trace function for each complex data type stored in the system. The benefit is the reduction of coupling between components using the system, turning exponential inherent complexity into linear inherent complexity per component.
+
+When many pointers escape the gc system (by calling gcroot, which usually later requires a manual call to gcunroot), the complexity of manual freeing can quickly re-enter the system. The library delivers the most benefit when most of the complexity of references within the system is much greater than the complexity of references outside the system, such as in data structures, tiered systems and interpreters. As a rule of thumb, pointers to manually-managed memory do not cause a problem for the system, but the structure of gcrefs managed externally should be kept as simple as possible.
+
+The library was originally conceived as part of a runtime system for a pure functional programming language, but on further thought, it was realized that such a library could have more general applicability. Due to its origins, our library focuses on immutable data, and so may not be very performant for idiomatic C. Nevertheless, the library should be suitable for new C projects. On immutable data, however, we can take advantage of simple generations (no new objects can pint to old objects), copy-on-write and memory-sharing.
+
+
++-------------------+
+|       sbrk        |
++-------------------+
+| malloc            |
+|    +--------------+
+|    | Tenure       |
+|    |  +-----------+
+|    |  | Nursuries |
+|    +--+-----------+
+|    |   Collector  |
++----+--+-----------+
+|  Application      |
++-------------------+

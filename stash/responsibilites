@@ -1,0 +1,35 @@
+
+common.h
+	int MAX_HEAP_SIZE; //STUB
+
+	int REG_BLOCK_SIZE = 32;
+
+	int NURSERY_SIZE = 512*1024;
+	int SKIP_NURSERY_THRESHOLD = 1024;
+
+	int SUGGESTED_QUEUE_SIZE = 128;
+
+
+gateway.h
+	create gateways
+	getRegistry
+	registry update functions
+
+alloc.h
+	getNursery
+	create newborns
+	move newborns to tenure
+	manage finalize and free
+
+trace.h
+	getTracer
+	enqueue/dequeue
+	root management
+	tracing algorithms
+
+init.h
+	(de)initialize registry, nursery, tracer
+	ensure configuration doesn't change while the gc is enabled
+
+one .inc for each .h
+impl.c: include all the .inc files
