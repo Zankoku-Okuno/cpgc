@@ -3,6 +3,7 @@
 
 
 #include <stddef.h>
+#include <inttypes.h>
 
 
 //supply and track all overhead data for a single garbage collection thread
@@ -15,8 +16,8 @@ typedef gcGateway* gcRef;
 
 //describes a garbage-collected datum: everything needed to trace and collect
 typedef struct gcMeta {
-	size_t refs; //number of gc pointers to managed data
-	size_t raw; //bytes of unmanaged data
+    size_t refs; //number of gc pointers to managed data
+    size_t raw; //bytes of unmanaged data
     void (*cleanup)(void* obj); //function called before collection. NULL is no cleanup. cleanup must not rely on the existence or non-existance of other managed data
 } gcMeta;
 
@@ -32,6 +33,8 @@ void gc_addRoot(gcEngine* engine, gcRef obj);
 void gc_remRoot(gcEngine* engine, gcRef obj);
 //TODO convenience&efficiency: swap root -- del one and add the other
 
+//mark a gateway as being a reference cell (and therefore may point to newer values)
+void gc_addCell(gcEngine* engine, gcRef obj);
 
 //prepare a handle to store a single datum
 gcRef gc_allocValue(gcEngine* engine, gcMeta* meta);
