@@ -1,0 +1,10 @@
+engines have no locks, and so must be used single-threading
+to enable communication between threads, you'll need to have some sort of channel:
+	the channel locks
+	the source thread copies data into the channel
+	the source and sink synchronize
+	the sink thread grabs the data (either copies or takes ownership, depending on the channel)
+the channel may itself have some form of garbage collection
+
+this doesn't solve passing data to a child thread by closure
+could be done by setting current closure as a root, or by copying current closure, or some form of analysis
