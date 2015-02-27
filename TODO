@@ -1,0 +1,44 @@
+[ ] Allocation
+	[*] of management structures
+	[*] of user data in tenure space
+	[ ] of user data in the nursury
+[*] Manipulation
+[ ] Collection
+	[*] Major
+	[ ] Minor
+[ ] Layout
+	[*] Single Object
+	[*] With Cleanup
+	[ ] Contiguous Array
+[ ] Cross-thread Communication
+[*] Destroy Engines
+[ ] Utilities
+	[ ] Alloc and initialize
+	[ ] Thunks
+	[ ] General References
+
+Fixup
+	Abstractify gcinfo
+
+Platform Dependence
+	assumption of 64-bit machine
+	use of gcc __builtin_ctzll
+	assuming aligned to word is good enough
+
+Performance
+	choose gcptrs block to fit nicely
+	fast alocator for gcptr blocks
+	profile whether to use single word for info-less gc
+
+Test
+
+Document
+
+Literate Documentation
+	Allocation
+
+Configuration
+
+Cool Features
+	register cleanup function to be called on collection
+	force-collect an object, leaving a tombstone
