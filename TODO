@@ -8,7 +8,7 @@
 	[ ] Minor
 [ ] Layout
 	[*] Single Object
-	[*] With Cleanup
+	[ ] With Cleanup
 	[ ] Contiguous Array
 [ ] Cross-thread Communication
 [*] Destroy Engines
@@ -18,12 +18,12 @@
 	[ ] General References
 
 Fixup
-	Abstractify gcinfo
 
 Platform Dependence
 	assumption of 64-bit machine
 	use of gcc __builtin_ctzll
-	assuming aligned to word is good enough
+	assuming aligned to whatever malloc aligns to is good enough
+		this assumption could get worse with the nursery
 
 Performance
 	choose gcptrs block to fit nicely
@@ -40,5 +40,6 @@ Literate Documentation
 Configuration
 
 Cool Features
-	register cleanup function to be called on collection
+	register finalizer per-object to be called on collection
 	force-collect an object, leaving a tombstone
+		tombstone just means the data pointer is NULL

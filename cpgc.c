@@ -7,48 +7,64 @@ static const size_t block_size = 64;
 typedef struct objblock objblock;
 typedef struct objring objring;
 
-typedef enum { UNMARKED, MARKED } mark;
-
 //------------------------------------
 // Data Structures
+
+////// Object Info //////
+typedef enum { UNMARKED = 0, MARKED = 1 } mark;
+
+struct gcinfo {
+    size_t num_unboxed_bytes : 32;
+    size_t num_subobjs : 31;
+    //FIXME make space in the word to give an contiguous-array length
+    //TODO a flag to say "this is a pointer to the real info", which can then have a finalizer and larger bounds
+    mark mark : 1;
+};
+gcinfo mk_gcinfo(size_t num_subobjs, size_t num_unboxed_bytes) {
+    gcinfo out;
+    out.num_subobjs = num_subobjs;
+    out.num_unboxed_bytes = num_unboxed_bytes;
+    out.mark = UNMARKED;
+    return out;
+}
+
+// Compute the full size of a managed object.
+static inline
+size_t sizeofLayout(gcinfo info) {
+    return info.num_subobjs * sizeof(gc*) + info.num_unboxed_bytes;
+}
+
 
 ////// Objects //////
 struct gc {
     void* data_p;
-    gcinfo* info;
-    mark mark;
+    gcinfo info;
 };
 static inline
-void init_obj(gc* obj, gcinfo* info) {
+void init_obj(gc* obj, gcinfo info) {
     obj->info = info;
-    obj->mark = UNMARKED;
 }
 static inline
 void cleanup_obj(gc* obj) {
-    //FIXME causing segfault because info is null
-    if (obj->info->cleanup) {
-        obj->info->cleanup(obj->data_p);
-    }
+    // if (obj->info->cleanup) {
+    //     obj->info->cleanup(obj->data_p);
+    // }
     free(obj->data_p);
 }
 
 static inline
 int isMarked(gc* obj) {
-    return obj->mark == MARKED;
+    return obj->info.mark == MARKED;
 }
 static inline
 void setMarked(gc* obj) {
-    obj->mark = MARKED;
+    obj->info.mark = MARKED;
 }
 static inline
 void clrMarked(gc* obj) {
-    obj->mark = UNMARKED;
+    obj->info.mark = UNMARKED;
 }
 
-static inline
-int nsubobjs(gc* obj) {
-    return obj->info->num_subobjs;
-}
 static inline
 gc** getsubobj(gc* obj, size_t ix) {
     //FIXME bounds-check ix, or at least assert it
@@ -56,7 +72,7 @@ gc** getsubobj(gc* obj, size_t ix) {
 }
 static inline
 void* getunboxed(gc* obj) {
-    return (gc**)obj->data_p + nsubobjs(obj);
+    return (gc**)obj->data_p + obj->info.num_subobjs;
 }
 
 ////// Blocks //////
@@ -79,11 +95,11 @@ uint64_t clrUsed(uint64_t word, int i) {
 struct objblock {
     uint64_t registry;
     objblock* next_block;
-    gc ptrs[block_size];
+    gc objs[block_size];
 };
 static inline
 gc* objFromBlock(objblock* block, int ix) {
-    return &block->ptrs[ix];
+    return &block->objs[ix];
 }
 static
 objblock* create_objblock() {
@@ -206,7 +222,7 @@ void traceobj_major(gc* obj) {
         setMarked(obj);
 
         gc** subobj = (gc**)obj->data_p;
-        gc** stop = subobj + nsubobjs(obj);
+        gc** stop = subobj + obj->info.num_subobjs;
         for (; subobj < stop; ++subobj) {
             traceobj_major(*subobj);
         }
@@ -284,16 +300,11 @@ void gccollect_major(gcengine* engine) {
 //------------------------------------
 // User Data Allocation
 
-// Compute the full size of a managed object.
-static inline
-size_t sizeofLayout(gcinfo* info) {
-    return info->num_subobjs * sizeof(gc*) + info->unboxed_bytes;
-}
 
 // Obtain a fresh pointer in tenured space.
 // If no such pointer can be created, return NULL.
 static
-gc* tenure_alloc(gcengine* engine, gcinfo* info) {
+gc* tenure_alloc(gcengine* engine, gcinfo info) {
     void* data_p = malloc(sizeofLayout(info));
     if (!data_p) {
         return NULL;
@@ -312,7 +323,7 @@ gc* tenure_alloc(gcengine* engine, gcinfo* info) {
 // If memory cannot initially be found, this triggers a collection cycle.
 // If the memory still cannot be allocated (incl. if the internal bookkeeping cannot be alloc'd), returns NULL.
 // The contents of `info` must not change for the lifetime of the engine.
-gc* gcalloc(gcengine* engine, gcinfo* info) {
+gc* gcalloc(gcengine* engine, gcinfo info) {
     gc* obj = tenure_alloc(engine, info);
     if (!obj) {
         gccollect_major(engine);
@@ -328,7 +339,7 @@ gc* gcalloc(gcengine* engine, gcinfo* info) {
 // If internal bookkeeping cannot be allocated, returns NULL.
 // Also, if this function fails, the pointer does not become stale, but is still owned by its previous owner.
 // The contents of `info` must not change for the lifetime of the engine.
-gc* gcgive(gcengine* engine, void* raw_data, gcinfo* info) {
+gc* gcgive(gcengine* engine, void* raw_data, gcinfo info) {
     gc* obj = objring_alloc(&engine->allobjs);
     if (!obj) {
         return NULL;

@@ -3,6 +3,7 @@
 
 int main(int argc, char **argv) {
     printf("Mesdames, messiurres, bon soir!\n");
+    printf("gcinfo: %ld\ngc: %ld\n", sizeof(gcinfo), sizeof(gc));
     int testing_bmalloc64 = 1,
         testing_block_alloc = 1,
         testing_objring_alloc = 1,
@@ -77,9 +78,8 @@ int main(int argc, char **argv) {
 
     if (testing_basic_engine) {
     printf("RUN: basic engine...\n");
-        gcinfo int_info, intp_info;
-        int_info.num_subobjs = 0, int_info.unboxed_bytes = sizeof(int), int_info.cleanup = NULL;
-        intp_info.num_subobjs = 1, intp_info.unboxed_bytes = 0, intp_info.cleanup = NULL;
+        gcinfo int_info = mk_gcinfo(0, sizeof(int));
+        gcinfo intp_info = mk_gcinfo(1, 0);
         gcengine* e = create_gcengine();
         uint64_t* reg = &e->allobjs.current->registry;
         if (*reg != ~(uint64_t)0) {
@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
         }
         int* raw_i = malloc(sizeof(int));
         *raw_i = 137;
-        gc* i = gcgive(e, raw_i, &int_info);
+        gc* i = gcgive(e, raw_i, int_info);
         if (*(int*)gcunboxed(i) != 137) {
             printf("FAIL: integer 137 data lost.\n");
             exit(1);
@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
             printf("FAIL: engine doesn't have one object after alloc i: %p\n", (void*)*reg);
             exit(1);
         }
-        gc* i_p = gcalloc(e, &intp_info);
+        gc* i_p = gcalloc(e, intp_info);
         *gcsubobj(i_p, 0) = i;
         if (*gcsubobj(i_p, 0) != i) {
             printf("FAIL: pointer to i lost.\n");
@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
             printf("FAIL: engine doesn't have two objects after alloc i_p: %p\n", (void*)*reg);
             exit(1);
         }
-        gc* nil = gcgive(e, NULL, &int_info);
+        gc* nil = gcgive(e, NULL, int_info);
         if (*reg != ~(uint64_t)(1+2+4)) {
             printf("FAIL: engine doesn't have three objects after alloc nil: %p\n", (void*)*reg);
             exit(1);
@@ -119,18 +119,18 @@ int main(int argc, char **argv) {
 
         setroot(e, i_p);
         traceengine_major(e);
-        if (i->mark == UNMARKED || i_p->mark == UNMARKED || nil->mark == MARKED) {
+        if (!isMarked(i) || !isMarked(i_p) || isMarked(nil)) {
             printf("FAIL: Improper marking after trace\n");
-            printf("  nil %d\n", nil->mark);
-            printf("  i %d\n", i->mark);
-            printf("  i_p %d\n", i_p->mark);
+            printf("  nil %d\n", nil->info.mark);
+            printf("  i %d\n", i->info.mark);
+            printf("  i_p %d\n", i_p->info.mark);
             exit(1);
         }
         cleanupengine_major(e);
-        if (i->mark != UNMARKED || i_p->mark != UNMARKED) {
+        if (isMarked(i) || isMarked(i_p)) {
             printf("FAIL: Improper marking after cleanup\n");
-            printf("  i %d\n", i->mark);
-            printf("  i_p %d\n", i_p->mark);
+            printf("  i %d\n", i->info.mark);
+            printf("  i_p %d\n", i_p->info.mark);
             exit(1);
         }
         if (*reg != ~(uint64_t)(1+2)) {
