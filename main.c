@@ -7,7 +7,8 @@ int main(int argc, char **argv) {
     int testing_bmalloc64 = 1,
         testing_block_alloc = 1,
         testing_objring_alloc = 1,
-        testing_basic_engine = 1;
+        testing_basic_engine = 1,
+        testing_arrays = 1;
     
     if (testing_bmalloc64) {
     printf("RUN: bitmask allocator...\n");
@@ -78,8 +79,8 @@ int main(int argc, char **argv) {
 
     if (testing_basic_engine) {
     printf("RUN: basic engine...\n");
-        gcinfo int_info = mk_gcinfo(0, sizeof(int));
-        gcinfo intp_info = mk_gcinfo(1, 0);
+        gcinfo int_info = mk_gcinfo(0, sizeof(int), 1);
+        gcinfo intp_info = mk_gcinfo(1, 0, 1);
         gcengine* e = create_gcengine();
         uint64_t* reg = &e->allobjs.current->registry;
         if (*reg != ~(uint64_t)0) {
@@ -144,6 +145,34 @@ int main(int argc, char **argv) {
             exit(1);
         }
 
+    printf("PASS.\n");
+    }
+
+    if (testing_arrays) {
+    printf("RUN: arrays...\n");
+        gcinfo int_info = mk_gcinfo(0, sizeof(int), 1);
+        gcinfo intpx4_info = mk_gcinfo(1, 0, 4);
+
+        gcengine* e = create_gcengine();
+        gc* i1 = gcalloc(e, int_info);
+        *(int*)gcunboxed(i1) = 137;
+        gc* i2 = gcalloc(e, int_info);
+        *(int*)gcunboxed(i1) = 42;
+        gc* iarr = gcalloc(e, intpx4_info);
+        *gcarrsubobj(iarr, 0, 0) = i1;
+        *gcarrsubobj(iarr, 1, 0) = i1;
+        *gcarrsubobj(iarr, 2, 0) = NULL;
+        *gcarrsubobj(iarr, 3, 0) = i2;
+        setroot(e, iarr);
+
+        traceengine_major(e);
+        if (!isMarked(i1) || !isMarked(i2) || !isMarked(iarr)) {
+            printf("FAIL: Improper marking after trace\n");
+            printf("  i1 %d\n", i1->info.mark);
+            printf("  i2 %d\n", i2->info.mark);
+            printf("  iarr %d\n", iarr->info.mark);
+            exit(1);
+        }
     printf("PASS.\n");
     }
 

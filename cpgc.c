@@ -15,23 +15,29 @@ typedef enum { UNMARKED = 0, MARKED = 1 } mark;
 
 struct gcinfo {
     size_t num_unboxed_bytes : 32;
-    size_t num_subobjs : 31;
-    //FIXME make space in the word to give an contiguous-array length
+    size_t arrlen : 16;
+    size_t num_subobjs : 15;
     //TODO a flag to say "this is a pointer to the real info", which can then have a finalizer and larger bounds
     mark mark : 1;
 };
-gcinfo mk_gcinfo(size_t num_subobjs, size_t num_unboxed_bytes) {
+gcinfo mk_gcinfo(size_t num_subobjs, size_t num_unboxed_bytes, size_t arrlen) {
     gcinfo out;
     out.num_subobjs = num_subobjs;
     out.num_unboxed_bytes = num_unboxed_bytes;
+    out.arrlen = arrlen;
     out.mark = UNMARKED;
     return out;
 }
 
-// Compute the full size of a managed object.
+// Compute the full size of a single managed object.
 static inline
-size_t sizeofLayout(gcinfo info) {
+size_t sizeofobj(gcinfo info) {
     return info.num_subobjs * sizeof(gc*) + info.num_unboxed_bytes;
+}
+// Compute the full size of a contiguous array of managed objects.
+static inline
+size_t sizeofarr(gcinfo info) {
+    return info.arrlen * sizeofobj(info);
 }
 
 
@@ -65,14 +71,27 @@ void clrMarked(gc* obj) {
     obj->info.mark = UNMARKED;
 }
 
+// The next three compute various offsets from void pointers into the layouts of managed objects.
 static inline
-gc** getsubobj(gc* obj, size_t ix) {
-    //FIXME bounds-check ix, or at least assert it
-    return (gc**)obj->data_p + ix;
+gc** subobjoffset(void* objdata, gcinfo info, size_t subobjix) {
+    return (gc**)objdata + subobjix;
 }
 static inline
-void* getunboxed(gc* obj) {
-    return (gc**)obj->data_p + obj->info.num_subobjs;
+gc** unboxedoffset(void* objdata, gcinfo info) {
+    return (gc**)objdata + info.num_subobjs;
+}
+static inline
+void* arroffset(void* arrdata, gcinfo info, size_t arrix) {
+    return arrdata + arrix * sizeofobj(info);
+}
+// The next two combine array index and subobject index to compute the offset from the start of an object.
+static inline
+gc** arrsubobjoffset(gc* obj, size_t arrix, size_t subobjix) {
+    return subobjoffset(arroffset(obj->data_p, obj->info, arrix), obj->info, subobjix);
+}
+static inline
+void* arrunboxedoffset(gc* obj, size_t arrix) {
+    return unboxedoffset(arroffset(obj->data_p, obj->info, arrix), obj->info);
 }
 
 ////// Blocks //////
@@ -157,8 +176,6 @@ void destroy_gcengine(gcengine* engine) {
 }
 
 
-
-
 //------------------------------------
 // Management Structures
 
@@ -217,14 +234,28 @@ gc* objring_alloc(objring* ring) {
 // C.f. `traceobj_minor`.
 static
 void traceobj_major(gc* obj) {
-    if (!obj | isMarked(obj)) return;
+    if (!obj || isMarked(obj)) {
+        return;
+    }
     else {
         setMarked(obj);
 
-        gc** subobj = (gc**)obj->data_p;
-        gc** stop = subobj + obj->info.num_subobjs;
-        for (; subobj < stop; ++subobj) {
-            traceobj_major(*subobj);
+        // for (int i = 0; i < obj->info.arrlen; ++i) {
+        //     for (int j = 0; j < obj->info.num_subobjs; ++j) {
+        //         traceobj_major(*gcarrsubobj(obj, i, j));
+        //     }
+        // }
+
+        size_t objsize = sizeofobj(obj->info);
+        void* objstart = arroffset(obj->data_p, obj->info, 0);
+        void* subobjstop = arrsubobjoffset(obj, 0, obj->info.num_subobjs);
+        void* arrstop = arroffset(obj->data_p, obj->info, obj->info.arrlen);
+        while (objstart < arrstop) {
+            for (gc** subobj = (gc**)objstart; subobj < (gc**)subobjstop; ++subobj) {
+                traceobj_major(*subobj);
+            }
+            objstart += objsize;
+            subobjstop += objsize;
         }
     }
 }
@@ -305,7 +336,7 @@ void gccollect_major(gcengine* engine) {
 // If no such pointer can be created, return NULL.
 static
 gc* tenure_alloc(gcengine* engine, gcinfo info) {
-    void* data_p = malloc(sizeofLayout(info));
+    void* data_p = malloc(sizeofarr(info));
     if (!data_p) {
         return NULL;
     }
@@ -357,16 +388,32 @@ gc* gcgive(gcengine* engine, void* raw_data, gcinfo info) {
 // User Data Manipulation
 
 
-// Return the ith subobject from a gc-managed object.
-gc** gcsubobj(gc* obj, size_t ix) {
-    return getsubobj(obj, ix);
+// Return the `subobjix`th subobject from a gc-managed object.
+gc** gcsubobj(gc* obj, size_t subobjix) {
+    return subobjoffset(obj->data_p, obj->info, subobjix);
 }
 
 // Return a pointer to the unboxed data of a gc-managed object.
 // The returned pointer becomes stale after any call to `gcalloc` with the same engine that manages this handle.
 // Thus, it is best to run this without storing it for very long: either do your calculations or update, then get out of the way.
 void* gcunboxed(gc* obj) {
-    return getunboxed(obj);
+    return unboxedoffset(obj->data_p, obj->info);
+}
+
+// Return the length of a managed array.
+// If the pointer is only to an object return 1.
+size_t arrlen(gc* obj) {
+    return obj->info.arrlen;
+}
+
+// Return a subobject (as `gcsubobj`) of the `arrix`th object in a managed array.
+gc** gcarrsubobj(gc* obj, size_t arrix, size_t subobjix) {
+    return subobjoffset(arroffset(obj->data_p, obj->info, arrix), obj->info, subobjix);
+}
+
+// Return the unboxed data (as `gcunbox`) of the `arrix`th object in a managed array.
+void* gcarrunboxed(gc* obj, size_t arrix) {
+    return unboxedoffset(arroffset(obj->data_p, obj->info, arrix), obj->info);
 }
 
 //------------------------------------
