@@ -79,8 +79,8 @@ int main(int argc, char **argv) {
 
     if (testing_basic_engine) {
     printf("RUN: basic engine...\n");
-        gcinfo int_info = mk_gcinfo(0, sizeof(int), 1);
-        gcinfo intp_info = mk_gcinfo(1, 0, 1);
+        gcinfo int_info = mk_gcinfo_obj(0, sizeof(int), NULL);
+        gcinfo intp_info = mk_gcinfo_obj(1, 0, NULL);
         gcengine* e = create_gcengine();
         uint64_t* reg = &e->allobjs.current->registry;
         if (*reg != ~(uint64_t)0) {
@@ -122,16 +122,16 @@ int main(int argc, char **argv) {
         traceengine_major(e);
         if (!isMarked(i) || !isMarked(i_p) || isMarked(nil)) {
             printf("FAIL: Improper marking after trace\n");
-            printf("  nil %d\n", nil->info.mark);
-            printf("  i %d\n", i->info.mark);
-            printf("  i_p %d\n", i_p->info.mark);
+            printf("  nil %d\n", nil->info.as.fixed.mark);
+            printf("  i %d\n", i->info.as.fixed.mark);
+            printf("  i_p %d\n", i_p->info.as.fixed.mark);
             exit(1);
         }
         cleanupengine_major(e);
         if (isMarked(i) || isMarked(i_p)) {
             printf("FAIL: Improper marking after cleanup\n");
-            printf("  i %d\n", i->info.mark);
-            printf("  i_p %d\n", i_p->info.mark);
+            printf("  i %d\n", i->info.as.fixed.mark);
+            printf("  i_p %d\n", i_p->info.as.fixed.mark);
             exit(1);
         }
         if (*reg != ~(uint64_t)(1+2)) {
@@ -150,8 +150,8 @@ int main(int argc, char **argv) {
 
     if (testing_arrays) {
     printf("RUN: arrays...\n");
-        gcinfo int_info = mk_gcinfo(0, sizeof(int), 1);
-        gcinfo intpx4_info = mk_gcinfo(1, 0, 4);
+        gcinfo int_info = mk_gcinfo_obj(0, sizeof(int), NULL);
+        gcinfo intpx4_info = mk_gcinfo_arr(4, 1, 0, NULL);
 
         gcengine* e = create_gcengine();
         gc* i1 = gcalloc(e, int_info);
@@ -168,9 +168,9 @@ int main(int argc, char **argv) {
         traceengine_major(e);
         if (!isMarked(i1) || !isMarked(i2) || !isMarked(iarr)) {
             printf("FAIL: Improper marking after trace\n");
-            printf("  i1 %d\n", i1->info.mark);
-            printf("  i2 %d\n", i2->info.mark);
-            printf("  iarr %d\n", iarr->info.mark);
+            printf("  i1 %d\n", i1->info.as.fixed.mark);
+            printf("  i2 %d\n", i2->info.as.fixed.mark);
+            printf("  iarr %d\n", iarr->info.as.fixed.mark);
             exit(1);
         }
     printf("PASS.\n");

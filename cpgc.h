@@ -8,7 +8,8 @@ typedef struct gcengine gcengine;
 gcengine* create_gcengine();
 void destroy_gcengine(gcengine*);
 
-gcinfo mk_gcinfo(size_t num_subobjs, size_t num_unboxed_bytes, size_t arrlen);
+gcinfo mk_gcinfo_obj(size_t num_subobjs, size_t num_unboxed_bytes, void (*finalize)(void*));
+gcinfo mk_gcinfo_arr(size_t arrlen, size_t num_subobjs, size_t num_unboxed_bytes, void (*finalize)(void*));
 
 gc* gcalloc(gcengine*, gcinfo);
 gc* gcgive(gcengine*, void* raw_data, gcinfo);

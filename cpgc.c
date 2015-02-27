@@ -12,34 +12,54 @@ typedef struct objring objring;
 
 ////// Object Info //////
 typedef enum { UNMARKED = 0, MARKED = 1 } mark;
+typedef enum { FIXED = 0, CUSTOM = 1 } info_format;
 
 struct gcinfo {
-    size_t num_unboxed_bytes : 32;
-    size_t arrlen : 16;
-    size_t num_subobjs : 15;
-    //TODO a flag to say "this is a pointer to the real info", which can then have a finalizer and larger bounds
-    mark mark : 1;
+    union {
+        struct {
+            size_t finalizer_table_offset : 16;
+            size_t num_raw_bytes : 16;
+            size_t arrlen : 16;
+            size_t num_subobjs : 14;
+            info_format format : 1;
+            mark mark : 1;
+        } fixed;
+        struct {
+            size_t finalizer_table_offset : 16;
+            size_t tracer_table_offset : 16;
+            size_t objsize : 30;
+            info_format format : 1;
+            mark mark : 1;
+        } custom;
+    } as;
 };
-gcinfo mk_gcinfo(size_t num_subobjs, size_t num_unboxed_bytes, size_t arrlen) {
+
+gcinfo mk_gcinfo_arr(size_t arrlen, size_t num_subobjs, size_t num_unboxed_bytes, void (*finalize)(void*)) {
     gcinfo out;
-    out.num_subobjs = num_subobjs;
-    out.num_unboxed_bytes = num_unboxed_bytes;
-    out.arrlen = arrlen;
-    out.mark = UNMARKED;
+    out.as.fixed.num_subobjs = num_subobjs;
+    out.as.fixed.num_raw_bytes = num_unboxed_bytes;
+    out.as.fixed.arrlen = arrlen;
+    out.as.fixed.format = FIXED;
+    out.as.fixed.mark = UNMARKED;
     return out;
 }
-
-// Compute the full size of a single managed object.
-static inline
-size_t sizeofobj(gcinfo info) {
-    return info.num_subobjs * sizeof(gc*) + info.num_unboxed_bytes;
+gcinfo mk_gcinfo_obj(size_t num_subobjs, size_t num_unboxed_bytes, void (*finalize)(void*)) {
+    return mk_gcinfo_arr(1, num_subobjs, num_unboxed_bytes, finalize);
 }
-// Compute the full size of a contiguous array of managed objects.
-static inline
-size_t sizeofarr(gcinfo info) {
-    return info.arrlen * sizeofobj(info);
-}
+//TODO gcinfo mk_gcinfo_custom(void (*trace)(gc*, void (*recurse)(gc*)), size_t objsize, void (*finalize)(void*))
 
+// Compute the size of one element of a fixed-format managed array.
+static inline
+size_t sizeofObjElem(gcinfo info) {
+    return info.as.fixed.num_subobjs * sizeof(gc*) + info.as.fixed.num_raw_bytes;
+}
+// Compute the full size of a managed object.
+static inline
+size_t sizeofObj(gcinfo info) {
+    return info.as.fixed.format == FIXED
+        ? info.as.fixed.arrlen * sizeofObjElem(info)
+        : info.as.custom.objsize;
+}
 
 ////// Objects //////
 struct gc {
@@ -60,39 +80,39 @@ void cleanup_obj(gc* obj) {
 
 static inline
 int isMarked(gc* obj) {
-    return obj->info.mark == MARKED;
+    return obj->info.as.fixed.mark == MARKED;
 }
 static inline
 void setMarked(gc* obj) {
-    obj->info.mark = MARKED;
+    obj->info.as.fixed.mark = MARKED;
 }
 static inline
 void clrMarked(gc* obj) {
-    obj->info.mark = UNMARKED;
+    obj->info.as.fixed.mark = UNMARKED;
 }
 
-// The next three compute various offsets from void pointers into the layouts of managed objects.
-static inline
-gc** subobjoffset(void* objdata, gcinfo info, size_t subobjix) {
-    return (gc**)objdata + subobjix;
-}
-static inline
-gc** unboxedoffset(void* objdata, gcinfo info) {
-    return (gc**)objdata + info.num_subobjs;
-}
-static inline
-void* arroffset(void* arrdata, gcinfo info, size_t arrix) {
-    return arrdata + arrix * sizeofobj(info);
-}
-// The next two combine array index and subobject index to compute the offset from the start of an object.
-static inline
-gc** arrsubobjoffset(gc* obj, size_t arrix, size_t subobjix) {
-    return subobjoffset(arroffset(obj->data_p, obj->info, arrix), obj->info, subobjix);
-}
-static inline
-void* arrunboxedoffset(gc* obj, size_t arrix) {
-    return unboxedoffset(arroffset(obj->data_p, obj->info, arrix), obj->info);
-}
+// // The next three compute various offsets from void pointers into the layouts of managed objects.
+// static inline
+// gc** subobjoffset(void* objdata, gcinfo info, size_t subobjix) {
+//     return (gc**)objdata + subobjix;
+// }
+// static inline
+// gc** unboxedoffset(void* objdata, gcinfo info) {
+//     return (gc**)objdata + info.num_subobjs;
+// }
+// static inline
+// void* arroffset(void* arrdata, gcinfo info, size_t arrix) {
+//     return arrdata + arrix * sizeofobj(info);
+// }
+// // The next two combine array index and subobject index to compute the offset from the start of an object.
+// static inline
+// gc** arrsubobjoffset(gc* obj, size_t arrix, size_t subobjix) {
+//     return subobjoffset(arroffset(obj->data_p, obj->info, arrix), obj->info, subobjix);
+// }
+// static inline
+// void* arrunboxedoffset(gc* obj, size_t arrix) {
+//     return unboxedoffset(arroffset(obj->data_p, obj->info, arrix), obj->info);
+// }
 
 ////// Blocks //////
 static const uint64_t emptyRegistry = ~(uint64_t)0;
@@ -240,22 +260,18 @@ void traceobj_major(gc* obj) {
     else {
         setMarked(obj);
 
-        // for (int i = 0; i < obj->info.arrlen; ++i) {
-        //     for (int j = 0; j < obj->info.num_subobjs; ++j) {
-        //         traceobj_major(*gcarrsubobj(obj, i, j));
-        //     }
-        // }
+        //FIXME this is assuming fixed-format
 
-        size_t objsize = sizeofobj(obj->info);
-        void* objstart = arroffset(obj->data_p, obj->info, 0);
-        void* subobjstop = arrsubobjoffset(obj, 0, obj->info.num_subobjs);
-        void* arrstop = arroffset(obj->data_p, obj->info, obj->info.arrlen);
-        while (objstart < arrstop) {
-            for (gc** subobj = (gc**)objstart; subobj < (gc**)subobjstop; ++subobj) {
+        size_t elemsize = sizeofObjElem(obj->info);
+        void* elemStart = obj->data_p;
+        void* subobjStop = obj->data_p + sizeof(gc*) * obj->info.as.fixed.num_subobjs;
+        void* arrStop = obj->data_p + sizeofObjElem(obj->info) * obj->info.as.fixed.arrlen;
+        while (elemStart < arrStop) {
+            for (gc** subobj = (gc**)elemStart; subobj < (gc**)subobjStop; ++subobj) {
                 traceobj_major(*subobj);
             }
-            objstart += objsize;
-            subobjstop += objsize;
+            elemStart += elemsize;
+            subobjStop += elemsize;
         }
     }
 }
@@ -336,7 +352,7 @@ void gccollect_major(gcengine* engine) {
 // If no such pointer can be created, return NULL.
 static
 gc* tenure_alloc(gcengine* engine, gcinfo info) {
-    void* data_p = malloc(sizeofarr(info));
+    void* data_p = malloc(sizeofObj(info));
     if (!data_p) {
         return NULL;
     }
@@ -388,32 +404,32 @@ gc* gcgive(gcengine* engine, void* raw_data, gcinfo info) {
 // User Data Manipulation
 
 
-// Return the `subobjix`th subobject from a gc-managed object.
+// Return the `subobjix`th subobject from a fixed-format gc-managed object.
 gc** gcsubobj(gc* obj, size_t subobjix) {
-    return subobjoffset(obj->data_p, obj->info, subobjix);
+    return (gc**)obj->data_p + subobjix;
 }
 
-// Return a pointer to the unboxed data of a gc-managed object.
+// Return a pointer to the unboxed data of a fixed-format gc-managed object.
 // The returned pointer becomes stale after any call to `gcalloc` with the same engine that manages this handle.
 // Thus, it is best to run this without storing it for very long: either do your calculations or update, then get out of the way.
 void* gcunboxed(gc* obj) {
-    return unboxedoffset(obj->data_p, obj->info);
+    return (gc**)obj->data_p + obj->info.as.fixed.num_subobjs;
 }
 
-// Return the length of a managed array.
-// If the pointer is only to an object return 1.
+// Return the length of a fixed-format managed array.
+// If the pointer is only to an object, return 1.
 size_t arrlen(gc* obj) {
-    return obj->info.arrlen;
+    return obj->info.as.fixed.arrlen;
 }
 
 // Return a subobject (as `gcsubobj`) of the `arrix`th object in a managed array.
 gc** gcarrsubobj(gc* obj, size_t arrix, size_t subobjix) {
-    return subobjoffset(arroffset(obj->data_p, obj->info, arrix), obj->info, subobjix);
+    return (gc**)(obj->data_p + arrix * sizeofObjElem(obj->info)) + subobjix;
 }
 
 // Return the unboxed data (as `gcunbox`) of the `arrix`th object in a managed array.
 void* gcarrunboxed(gc* obj, size_t arrix) {
-    return unboxedoffset(arroffset(obj->data_p, obj->info, arrix), obj->info);
+    return (gc**)(obj->data_p + arrix * sizeofObjElem(obj->info)) + obj->info.as.fixed.num_subobjs;
 }
 
 //------------------------------------
