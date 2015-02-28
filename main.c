@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
             printf("FAIL: integer 137 data lost.\n");
             exit(1);
         }
-        if (*reg != ~(uint64_t)1) {
+        if (e->tracking.num_objects_in_tenure != 1 || *reg != ~(uint64_t)1) {
             printf("FAIL: engine doesn't have one object after alloc i: %p\n", (void*)*reg);
             exit(1);
         }
@@ -108,12 +108,12 @@ int main(int argc, char **argv) {
             printf("FAIL: couldn't trace back to integer 137.\n");
             exit(1);
         }
-        if (*reg != ~(uint64_t)(1+2)) {
+        if (e->tracking.num_objects_in_tenure != 2 || *reg != ~(uint64_t)(1+2)) {
             printf("FAIL: engine doesn't have two objects after alloc i_p: %p\n", (void*)*reg);
             exit(1);
         }
         gc* nil = gcgive(e, NULL, int_info);
-        if (*reg != ~(uint64_t)(1+2+4)) {
+        if (e->tracking.num_objects_in_tenure != 3 || *reg != ~(uint64_t)(1+2+4)) {
             printf("FAIL: engine doesn't have three objects after alloc nil: %p\n", (void*)*reg);
             exit(1);
         }
@@ -134,13 +134,13 @@ int main(int argc, char **argv) {
             printf("  i_p %d\n", i_p->info.as.fixed.mark);
             exit(1);
         }
-        if (*reg != ~(uint64_t)(1+2)) {
+        if (e->tracking.num_objects_in_tenure != 2 || *reg != ~(uint64_t)(1+2)) {
             printf("FAIL: nil not collected: %p\n", (void*)*reg);
             exit(1);
         }
         setroot(e, i);
         gccollect_major(e);
-        if (*reg != ~(uint64_t)(1)) {
+        if (e->tracking.num_objects_in_tenure != 1 || *reg != ~(uint64_t)(1)) {
             printf("FAIL: i_p not collected: %p\n", (void*)*reg);
             exit(1);
         }

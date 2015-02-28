@@ -6,10 +6,7 @@
 [ ] Collection
 	[*] Major
 	[ ] Minor
-[ ] Layout
-	[*] Single Object
-	[ ] With Cleanup
-	[ ] Contiguous Array
+[*] Layout
 [ ] Cross-thread Communication
 [*] Destroy Engines
 [ ] Utilities
@@ -31,6 +28,8 @@ Performance
 	profile whether to use single word for info-less gc
 
 Test
+	custom trace functions
+	finalizers
 
 Document
 
@@ -38,8 +37,9 @@ Literate Documentation
 	Allocation
 
 Configuration
+	when to trigger major cleanup
+	nursery size
 
 Cool Features
-	register finalizer per-object to be called on collection
 	force-collect an object, leaving a tombstone
 		tombstone just means the data pointer is NULL

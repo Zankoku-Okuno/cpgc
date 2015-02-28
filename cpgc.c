@@ -6,6 +6,7 @@ static const size_t block_size = 64;
 
 typedef struct objblock objblock;
 typedef struct objring objring;
+typedef struct engine_info engine_info;
 
 
 //------------------------------------
@@ -82,11 +83,17 @@ struct objring {
     objblock* current;
     objblock* last_collect;
 };
+struct engine_info {
+    size_t num_objects_in_tenure;
+    size_t size_objects_in_tenure;
+};
 struct gcengine {
     objring allobjs;
     gc* root; //TODO for simplicity, I'm just going with one root, presumably top of stack or some sort of overall interpreter control structure, but this probably needs multiple roots: how the rootset commonly changes determines my strategy
     void (**tracers)(gcengine*, void*, void (*)(gcengine*, gc*));
     void (**finalizers)(void*);
+
+    engine_info tracking;
 };
 
 ////// Objects //////
@@ -104,7 +111,7 @@ void clrMarked(gc* obj) {
 }
 
 static inline
-void cleanup_obj_major(void (**finalizers)(void*), gc* obj) {
+void cleanup_tenureobj(void (**finalizers)(void*), gc* obj) {
     size_t offset = obj->info.as.fixed.finalizer_table_offset;
     if (offset) {
         finalizers[offset](obj->data_p);
@@ -150,7 +157,8 @@ void destroy_objblock(gcengine* engine, objblock* block) {
     uint64_t registry = block->registry;
     for (int i = 0, e = block_size; i < e; ++i) {
         if (isUsed(registry, i)) {
-            cleanup_obj_major(engine->finalizers, objFromBlock(block, i));
+            //FIXME I need to use the appropriate cleanup
+            cleanup_tenureobj(engine->finalizers, objFromBlock(block, i));
         }
     }
     free(block);
@@ -180,6 +188,7 @@ gcengine* create_gcengine() {
     gcengine* new = malloc(sizeof(gcengine));
     new->allobjs = create_objring();
     new->root = NULL;
+    new->tracking.num_objects_in_tenure = new->tracking.size_objects_in_tenure = 0;
     return new;
 }
 void destroy_gcengine(gcengine* engine) {
@@ -193,6 +202,17 @@ void setgcFinalizers(gcengine* engine, void (**finalizers)(void*)) {
 }
 void setgcTracers(gcengine* engine, void (**tracers)(gcengine*, void*, void (*)(gcengine*, gc*))) {
     engine->tracers = tracers;
+}
+
+static inline
+void addTenure(gcengine* engine, gcinfo info) {
+    engine->tracking.num_objects_in_tenure += 1;
+    engine->tracking.size_objects_in_tenure += sizeofObj(info);
+}
+static inline
+void subTenure(gcengine* engine, gcinfo info) {
+    engine->tracking.num_objects_in_tenure -= 1;
+    engine->tracking.size_objects_in_tenure -= sizeofObj(info);
 }
 
 //------------------------------------
@@ -299,9 +319,11 @@ void cleanup_block(gcengine* engine, objblock* block) {
     uint64_t registry = block->registry;
     for (int i = 0; i < block_size; ++i) {
         gc* obj = objFromBlock(block, i);
+        //FIXME the following assumes the object is in tenure space
         if (isUsed(registry, i) && !isMarked(obj)) {
-            cleanup_obj_major(engine->finalizers, obj);
+            cleanup_tenureobj(engine->finalizers, obj);
             registry = clrUsed(registry, i);
+            subTenure(engine, obj->info);
         }
         else {
             clrMarked(obj);
@@ -365,6 +387,7 @@ gc* tenure_alloc(gcengine* engine, gcinfo info) {
     }
     obj->data_p = data_p;
     obj->info = info;
+    addTenure(engine, info);
     return obj;
 }
 
@@ -395,6 +418,7 @@ gc* gcgive(gcengine* engine, void* raw_data, gcinfo info) {
     }
     obj->data_p = raw_data;
     obj->info = info;
+    addTenure(engine, info);
     return obj;
 }
 
