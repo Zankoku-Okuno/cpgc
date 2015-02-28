@@ -7,10 +7,10 @@ static const size_t block_size = 64;
 typedef struct objblock objblock;
 typedef struct objring objring;
 
-//------------------------------------
-// Data Structures
 
-////// Object Info //////
+//------------------------------------
+// Metadata
+
 typedef enum { UNMARKED = 0, MARKED = 1 } mark;
 typedef enum { FIXED = 0, CUSTOM = 1 } info_format;
 
@@ -36,9 +36,10 @@ struct gcinfo {
 
 gcinfo mk_gcinfo_arr(size_t arrlen, size_t num_subobjs, size_t num_unboxed_bytes, void (*finalize)(void*)) {
     gcinfo out;
-    out.as.fixed.num_subobjs = num_subobjs;
+    out.as.fixed.finalizer_table_offset = 0;
     out.as.fixed.num_raw_bytes = num_unboxed_bytes;
     out.as.fixed.arrlen = arrlen;
+    out.as.fixed.num_subobjs = num_subobjs;
     out.as.fixed.format = FIXED;
     out.as.fixed.mark = UNMARKED;
     return out;
@@ -46,9 +47,13 @@ gcinfo mk_gcinfo_arr(size_t arrlen, size_t num_subobjs, size_t num_unboxed_bytes
 gcinfo mk_gcinfo_obj(size_t num_subobjs, size_t num_unboxed_bytes, void (*finalize)(void*)) {
     return mk_gcinfo_arr(1, num_subobjs, num_unboxed_bytes, finalize);
 }
-//TODO gcinfo mk_gcinfo_custom(void (*trace)(gc*, void (*recurse)(gc*)), size_t objsize, void (*finalize)(void*))
+//TODO gcinfo mk_gcinfo_custom(void (*trace)(gcengine*, void*, void (*recurse)(gcengine*, gc*)), size_t objsize, void (*finalize)(void*))
 
 // Compute the size of one element of a fixed-format managed array.
+static inline
+int isCustomFormat(gcinfo info) {
+    return info.as.fixed.format == CUSTOM;
+}
 static inline
 size_t sizeofObjElem(gcinfo info) {
     return info.as.fixed.num_subobjs * sizeof(gc*) + info.as.fixed.num_raw_bytes;
@@ -56,28 +61,35 @@ size_t sizeofObjElem(gcinfo info) {
 // Compute the full size of a managed object.
 static inline
 size_t sizeofObj(gcinfo info) {
-    return info.as.fixed.format == FIXED
-        ? info.as.fixed.arrlen * sizeofObjElem(info)
-        : info.as.custom.objsize;
+    return isCustomFormat(info) ? info.as.custom.objsize
+                                : info.as.fixed.arrlen * sizeofObjElem(info);
 }
 
-////// Objects //////
+
+//------------------------------------
+// Data Structures
+
 struct gc {
     void* data_p;
     gcinfo info;
 };
-static inline
-void init_obj(gc* obj, gcinfo info) {
-    obj->info = info;
-}
-static inline
-void cleanup_obj(gc* obj) {
-    // if (obj->info->cleanup) {
-    //     obj->info->cleanup(obj->data_p);
-    // }
-    free(obj->data_p);
-}
+struct objblock {
+    uint64_t registry;
+    objblock* next_block;
+    gc objs[block_size];
+};
+struct objring {
+    objblock* current;
+    objblock* last_collect;
+};
+struct gcengine {
+    objring allobjs;
+    gc* root; //TODO for simplicity, I'm just going with one root, presumably top of stack or some sort of overall interpreter control structure, but this probably needs multiple roots: how the rootset commonly changes determines my strategy
+    void (**tracers)(gcengine*, void*, void (*)(gcengine*, gc*));
+    void (**finalizers)(void*);
+};
 
+////// Objects //////
 static inline
 int isMarked(gc* obj) {
     return obj->info.as.fixed.mark == MARKED;
@@ -91,30 +103,20 @@ void clrMarked(gc* obj) {
     obj->info.as.fixed.mark = UNMARKED;
 }
 
-// // The next three compute various offsets from void pointers into the layouts of managed objects.
-// static inline
-// gc** subobjoffset(void* objdata, gcinfo info, size_t subobjix) {
-//     return (gc**)objdata + subobjix;
-// }
-// static inline
-// gc** unboxedoffset(void* objdata, gcinfo info) {
-//     return (gc**)objdata + info.num_subobjs;
-// }
-// static inline
-// void* arroffset(void* arrdata, gcinfo info, size_t arrix) {
-//     return arrdata + arrix * sizeofobj(info);
-// }
-// // The next two combine array index and subobject index to compute the offset from the start of an object.
-// static inline
-// gc** arrsubobjoffset(gc* obj, size_t arrix, size_t subobjix) {
-//     return subobjoffset(arroffset(obj->data_p, obj->info, arrix), obj->info, subobjix);
-// }
-// static inline
-// void* arrunboxedoffset(gc* obj, size_t arrix) {
-//     return unboxedoffset(arroffset(obj->data_p, obj->info, arrix), obj->info);
-// }
+static inline
+void cleanup_obj_major(void (**finalizers)(void*), gc* obj) {
+    size_t offset = obj->info.as.fixed.finalizer_table_offset;
+    if (offset) {
+        finalizers[offset](obj->data_p);
+    }
+    free(obj->data_p);
+}
+static inline
+void cleanup_minor(gc* obj) {
+    free(obj->data_p);
+}
 
-////// Blocks //////
+////// Registries //////
 static const uint64_t emptyRegistry = ~(uint64_t)0;
 static const uint64_t fullRegistry = (uint64_t)0;
 
@@ -131,58 +133,49 @@ uint64_t clrUsed(uint64_t word, int i) {
     return word | ((uint64_t)1 << i);
 }
 
-struct objblock {
-    uint64_t registry;
-    objblock* next_block;
-    gc objs[block_size];
-};
+////// Object Blocks //////
 static inline
 gc* objFromBlock(objblock* block, int ix) {
     return &block->objs[ix];
 }
+
 static
 objblock* create_objblock() {
     objblock* new = malloc(sizeof(objblock));
     new->registry = emptyRegistry;
     return new;
 }
-void destroy_objblock(objblock* block) {
+static
+void destroy_objblock(gcengine* engine, objblock* block) {
     uint64_t registry = block->registry;
     for (int i = 0, e = block_size; i < e; ++i) {
         if (isUsed(registry, i)) {
-            cleanup_obj(objFromBlock(block, i));
+            cleanup_obj_major(engine->finalizers, objFromBlock(block, i));
         }
     }
     free(block);
 }
 
-
-////// Handle Rings //////
-struct objring {
-    objblock* current;
-    objblock* last_collect;
-};
+////// Object Rings //////
+static
 objring create_objring() {
     objring res;
     res.current = res.last_collect = create_objblock();
     res.current->next_block = res.current;
     return res;
 }
-void destroy_objring(objring ring) {
+static
+void destroy_objring(gcengine* engine, objring ring) {
     objblock* start = ring.current;
     objblock* current = start;
     do {
         objblock* next = current->next_block;
-        destroy_objblock(current);
+        destroy_objblock(engine, current);
         current = next;
     } while (current != start);
 }
 
 ////// Engines //////
-struct gcengine {
-    objring allobjs;
-    gc* root; //TODO for simplicity, I'm just going with one root, presumably top of stack or some sort of overall interpreter control structure, but this probably needs multiple roots: how the rootset commonly changes determines my strategy
-};
 gcengine* create_gcengine() {
     gcengine* new = malloc(sizeof(gcengine));
     new->allobjs = create_objring();
@@ -191,10 +184,16 @@ gcengine* create_gcengine() {
 }
 void destroy_gcengine(gcengine* engine) {
     engine->root = NULL;
-    destroy_objring(engine->allobjs);
+    destroy_objring(engine, engine->allobjs);
     free(engine);
 }
 
+void setgcFinalizers(gcengine* engine, void (**finalizers)(void*)) {
+    engine->finalizers = finalizers;
+}
+void setgcTracers(gcengine* engine, void (**tracers)(gcengine*, void*, void (*)(gcengine*, gc*))) {
+    engine->tracers = tracers;
+}
 
 //------------------------------------
 // Management Structures
@@ -253,25 +252,29 @@ gc* objring_alloc(objring* ring) {
 // Trace a single object during major collection.
 // C.f. `traceobj_minor`.
 static
-void traceobj_major(gc* obj) {
+void traceobj_major(gcengine* engine, gc* obj) {
     if (!obj || isMarked(obj)) {
         return;
     }
     else {
         setMarked(obj);
-
-        //FIXME this is assuming fixed-format
-
-        size_t elemsize = sizeofObjElem(obj->info);
-        void* elemStart = obj->data_p;
-        void* subobjStop = obj->data_p + sizeof(gc*) * obj->info.as.fixed.num_subobjs;
-        void* arrStop = obj->data_p + sizeofObjElem(obj->info) * obj->info.as.fixed.arrlen;
-        while (elemStart < arrStop) {
-            for (gc** subobj = (gc**)elemStart; subobj < (gc**)subobjStop; ++subobj) {
-                traceobj_major(*subobj);
+        if (isCustomFormat(obj->info)) {
+            size_t offset = obj->info.as.custom.tracer_table_offset;
+            void (*trace)(gcengine*, void*, void (*)(gcengine*, gc*)) = engine->tracers[offset];
+            trace(engine, obj->data_p, traceobj_major);
+        }
+        else {
+            size_t elemsize = sizeofObjElem(obj->info);
+            void* elemStart = obj->data_p;
+            void* subobjStop = obj->data_p + sizeof(gc*) * obj->info.as.fixed.num_subobjs;
+            void* arrStop = obj->data_p + sizeofObjElem(obj->info) * obj->info.as.fixed.arrlen;
+            while (elemStart < arrStop) {
+                for (gc** subobj = (gc**)elemStart; subobj < (gc**)subobjStop; ++subobj) {
+                    traceobj_major(engine, *subobj);
+                }
+                elemStart += elemsize;
+                subobjStop += elemsize;
             }
-            elemStart += elemsize;
-            subobjStop += elemsize;
         }
     }
 }
@@ -280,7 +283,7 @@ void traceobj_major(gc* obj) {
 // After calling this, all unmarked objects are known unreachable.
 static
 void traceengine_major(gcengine* engine) {
-    traceobj_major(engine->root);
+    traceobj_major(engine, engine->root);
 }
 
 //TODO a babytrace, which also ignores objects outside of the nursery
@@ -292,12 +295,12 @@ void traceengine_major(gcengine* engine) {
 // Set any marked objects held back to unmarked.
 // Object slots that are not used are ignored.
 static inline
-void cleanup_block(objblock* block) {
+void cleanup_block(gcengine* engine, objblock* block) {
     uint64_t registry = block->registry;
     for (int i = 0; i < block_size; ++i) {
         gc* obj = objFromBlock(block, i);
         if (isUsed(registry, i) && !isMarked(obj)) {
-            cleanup_obj(obj);
+            cleanup_obj_major(engine->finalizers, obj);
             registry = clrUsed(registry, i);
         }
         else {
@@ -313,11 +316,11 @@ void cleanup_block(objblock* block) {
 // but we make sure there at least one block is left in the ring.
 static
 void cleanupengine_major(gcengine* engine) {
-    objblock* start_block = engine->allobjs.last_collect;
+    objblock* start_block = engine->allobjs.current;
     objblock* block = start_block;
     objblock* last_block = NULL;
     do {
-        cleanup_block(block);
+        cleanup_block(engine, block);
         if (block->registry == emptyRegistry && last_block != NULL) {
             last_block->next_block = block->next_block;
             free(block);
@@ -347,7 +350,6 @@ void gccollect_major(gcengine* engine) {
 //------------------------------------
 // User Data Allocation
 
-
 // Obtain a fresh pointer in tenured space.
 // If no such pointer can be created, return NULL.
 static
@@ -361,8 +363,8 @@ gc* tenure_alloc(gcengine* engine, gcinfo info) {
         free(data_p);
         return NULL;
     }
-    init_obj(obj, info);
     obj->data_p = data_p;
+    obj->info = info;
     return obj;
 }
 
@@ -391,8 +393,8 @@ gc* gcgive(gcengine* engine, void* raw_data, gcinfo info) {
     if (!obj) {
         return NULL;
     }
-    init_obj(obj, info);
     obj->data_p = raw_data;
+    obj->info = info;
     return obj;
 }
 
@@ -403,7 +405,6 @@ gc* gcgive(gcengine* engine, void* raw_data, gcinfo info) {
 //------------------------------------
 // User Data Manipulation
 
-
 // Return the `subobjix`th subobject from a fixed-format gc-managed object.
 gc** gcsubobj(gc* obj, size_t subobjix) {
     return (gc**)obj->data_p + subobjix;
@@ -412,7 +413,7 @@ gc** gcsubobj(gc* obj, size_t subobjix) {
 // Return a pointer to the unboxed data of a fixed-format gc-managed object.
 // The returned pointer becomes stale after any call to `gcalloc` with the same engine that manages this handle.
 // Thus, it is best to run this without storing it for very long: either do your calculations or update, then get out of the way.
-void* gcunboxed(gc* obj) {
+void* gcraw(gc* obj) {
     return (gc**)obj->data_p + obj->info.as.fixed.num_subobjs;
 }
 
@@ -428,7 +429,7 @@ gc** gcarrsubobj(gc* obj, size_t arrix, size_t subobjix) {
 }
 
 // Return the unboxed data (as `gcunbox`) of the `arrix`th object in a managed array.
-void* gcarrunboxed(gc* obj, size_t arrix) {
+void* gcarrraw(gc* obj, size_t arrix) {
     return (gc**)(obj->data_p + arrix * sizeofObjElem(obj->info)) + obj->info.as.fixed.num_subobjs;
 }
 

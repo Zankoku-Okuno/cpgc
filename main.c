@@ -90,7 +90,7 @@ int main(int argc, char **argv) {
         int* raw_i = malloc(sizeof(int));
         *raw_i = 137;
         gc* i = gcgive(e, raw_i, int_info);
-        if (*(int*)gcunboxed(i) != 137) {
+        if (*(int*)gcraw(i) != 137) {
             printf("FAIL: integer 137 data lost.\n");
             exit(1);
         }
@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
             printf("FAIL: pointer to i lost.\n");
             exit(1);
         }
-        if (*(int*)gcunboxed(*gcsubobj(i_p, 0)) != 137) {
+        if (*(int*)gcraw(*gcsubobj(i_p, 0)) != 137) {
             printf("FAIL: couldn't trace back to integer 137.\n");
             exit(1);
         }
@@ -155,9 +155,9 @@ int main(int argc, char **argv) {
 
         gcengine* e = create_gcengine();
         gc* i1 = gcalloc(e, int_info);
-        *(int*)gcunboxed(i1) = 137;
+        *(int*)gcraw(i1) = 137;
         gc* i2 = gcalloc(e, int_info);
-        *(int*)gcunboxed(i1) = 42;
+        *(int*)gcraw(i1) = 42;
         gc* iarr = gcalloc(e, intpx4_info);
         *gcarrsubobj(iarr, 0, 0) = i1;
         *gcarrsubobj(iarr, 1, 0) = i1;

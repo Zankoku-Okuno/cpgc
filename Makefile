@@ -1,5 +1,5 @@
 
-CC:=$(CC) -Iinclude -Isrc -Wall
+CC:=$(CC) --std=c99 -Iinclude -Isrc -Wall
 
 
 
@@ -16,7 +16,7 @@ test: main.c
 build: bin/cpgc.o
 
 bin/cpgc.o: $(IMPL_SRC)
-	$(CC) -O3 -c $(CFLAGS) $(IMPL_C) -o bin/cpgc.o
+	$(CC) -c $(CFLAGS) $(IMPL_C) -o bin/cpgc.o
 
 
 clean:
