@@ -12,20 +12,20 @@ int main(int argc, char **argv) {
     
     if (testing_bmalloc64) {
     printf("RUN: bitmask allocator...\n");
-        uint64_t reg = emptyRegistry;
+        uint64_t reg = emptyObjRegistry;
         int ix = -1;
-        for (int i = 0; i < block_size*3; i++) {
+        for (int i = 0; i < objblock_size*3; i++) {
             ix = bmalloc64(&reg);
-            if (i < block_size && ix == -1) {
+            if (i < objblock_size && ix == -1) {
                 printf("FAIL: Allocated too few: %d\n", i);
                 exit(1);
             }
-            if (i >= block_size && ix != -1) {
+            if (i >= objblock_size && ix != -1) {
                 printf("FAIL: Allocated too many: %d\n", i);
                 exit(1); 
             }
         }
-        for (int i = 0; i < block_size; ++i) {
+        for (int i = 0; i < objblock_size; ++i) {
             reg |= (uint64_t)0x1 << i;
             if (bmalloc64(&reg) != i) {
                 printf("FAIL: couldn't allocate in the middle: from %p\n", (void*)reg);
@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
                 printf("FAIL: Allocated too many after free: %d from %p\n", ix, (void*)reg);
                     exit(1);
             }
-            if (reg != fullRegistry) {
+            if (reg != fullObjRegistry) {
                 printf("FAIL: bitmask alloc into near-full registry didn't fill registry: %p\n", (void*)reg);
                 exit(1);
             }
@@ -47,10 +47,10 @@ int main(int argc, char **argv) {
     printf("RUN: block allocator...\n");
         objblock* block = create_objblock();
         gc* last = NULL;
-        for (int i = 1; i <= block_size+1; i++) {
-            gc* p = block_alloc(block);
+        for (int i = 1; i <= objblock_size+1; i++) {
+            gc* p = objblock_alloc(block);
             if (last + 1 != p) {
-                if (p == NULL && i <= block_size) {
+                if (p == NULL && i <= objblock_size) {
                     printf("FAIL: Allocated too few gc: %d\n", i);
                     exit(1);
                 }
@@ -118,7 +118,7 @@ int main(int argc, char **argv) {
             exit(1);
         }
 
-        setroot(e, i_p);
+        gcroot* rootslot = new_gcroot(e, i_p);
         traceengine_major(e);
         if (!isMarked(i) || !isMarked(i_p) || isMarked(nil)) {
             printf("FAIL: Improper marking after trace\n");
@@ -138,7 +138,7 @@ int main(int argc, char **argv) {
             printf("FAIL: nil not collected: %p\n", (void*)*reg);
             exit(1);
         }
-        setroot(e, i);
+        set_gcroot(rootslot, i);
         gccollect_major(e);
         if (e->tracking.num_objects_in_tenure != 1 || *reg != ~(uint64_t)(1)) {
             printf("FAIL: i_p not collected: %p\n", (void*)*reg);
@@ -163,7 +163,7 @@ int main(int argc, char **argv) {
         *gcarrsubobj(iarr, 1, 0) = i1;
         *gcarrsubobj(iarr, 2, 0) = NULL;
         *gcarrsubobj(iarr, 3, 0) = i2;
-        setroot(e, iarr);
+        new_gcroot(e, iarr);
 
         traceengine_major(e);
         if (!isMarked(i1) || !isMarked(i2) || !isMarked(iarr)) {

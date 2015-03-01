@@ -41,5 +41,6 @@ Configuration
 	nursery size
 
 Cool Features
+	what happens when we spin up a new thread using a closure?
 	force-collect an object, leaving a tombstone
 		tombstone just means the data pointer is NULL

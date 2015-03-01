@@ -2,10 +2,15 @@
 #include "stdlib.h"
 #include "cpgc.h"
 
-static const size_t block_size = 64;
+static const size_t objblock_size = 64;
+static const size_t rootblock_size = 64;
 
 typedef struct objblock objblock;
 typedef struct objring objring;
+
+typedef struct rootblock rootblock;
+typedef struct rootring rootring;
+
 typedef struct engine_info engine_info;
 
 
@@ -66,7 +71,6 @@ size_t sizeofObj(gcinfo info) {
                                 : info.as.fixed.arrlen * sizeofObjElem(info);
 }
 
-
 //------------------------------------
 // Data Structures
 
@@ -74,22 +78,36 @@ struct gc {
     void* data_p;
     gcinfo info;
 };
+
 struct objblock {
     uint64_t registry;
     objblock* next_block;
-    gc objs[block_size];
+    gc objs[objblock_size];
 };
 struct objring {
     objblock* current;
     objblock* last_collect;
 };
+
+struct gcroot {
+    gc* rootslot;
+};
+struct rootblock {
+    rootblock* next_block;
+    gcroot roots[rootblock_size];
+};
+struct rootring {
+    rootblock* current;
+};
+
 struct engine_info {
     size_t num_objects_in_tenure;
     size_t size_objects_in_tenure;
 };
 struct gcengine {
     objring allobjs;
-    gc* root; //TODO for simplicity, I'm just going with one root, presumably top of stack or some sort of overall interpreter control structure, but this probably needs multiple roots: how the rootset commonly changes determines my strategy
+    rootring allroots;
+    gc* root; //DELME
     void (**tracers)(gcengine*, void*, void (*)(gcengine*, gc*));
     void (**finalizers)(void*);
 
@@ -124,8 +142,8 @@ void cleanup_minor(gc* obj) {
 }
 
 ////// Registries //////
-static const uint64_t emptyRegistry = ~(uint64_t)0;
-static const uint64_t fullRegistry = (uint64_t)0;
+static const uint64_t emptyObjRegistry = ~(uint64_t)0;
+static const uint64_t fullObjRegistry = (uint64_t)0;
 
 static inline
 int isUsed(uint64_t registry, int i) {
@@ -149,13 +167,13 @@ gc* objFromBlock(objblock* block, int ix) {
 static
 objblock* create_objblock() {
     objblock* new = malloc(sizeof(objblock));
-    new->registry = emptyRegistry;
+    new->registry = emptyObjRegistry;
     return new;
 }
 static
 void destroy_objblock(gcengine* engine, objblock* block) {
     uint64_t registry = block->registry;
-    for (int i = 0, e = block_size; i < e; ++i) {
+    for (int i = 0, e = objblock_size; i < e; ++i) {
         if (isUsed(registry, i)) {
             //FIXME I need to use the appropriate cleanup
             cleanup_tenureobj(engine->finalizers, objFromBlock(block, i));
@@ -183,16 +201,50 @@ void destroy_objring(gcengine* engine, objring ring) {
     } while (current != start);
 }
 
+////// Root Blocks //////
+static
+rootblock* create_rootblock() {
+    rootblock* new = malloc(sizeof(rootblock));
+    for (int i = 0; i < rootblock_size; ++i) {
+        new->roots[i].rootslot = NULL;
+    }
+    return new;
+}
+static
+void destroy_rootblock(rootblock* block) {
+    free(block);
+}
+
+////// Root Rings //////
+static
+rootring create_rootring() {
+    rootring res;
+    res.current = create_rootblock();
+    res.current->next_block = res.current;
+    return res;
+}
+static
+void destroy_rootring(rootring ring) {
+    rootblock* start = ring.current;
+    rootblock* current = start;
+    do {
+        rootblock* next = current->next_block;
+        destroy_rootblock(current);
+        current = next;
+    } while (current != start);
+}
+
 ////// Engines //////
 gcengine* create_gcengine() {
     gcengine* new = malloc(sizeof(gcengine));
     new->allobjs = create_objring();
-    new->root = NULL;
+    new->allroots = create_rootring();
+    new->root = NULL; //DELME
     new->tracking.num_objects_in_tenure = new->tracking.size_objects_in_tenure = 0;
     return new;
 }
 void destroy_gcengine(gcengine* engine) {
-    engine->root = NULL;
+    destroy_rootring(engine->allroots);
     destroy_objring(engine, engine->allobjs);
     free(engine);
 }
@@ -205,12 +257,12 @@ void setgcTracers(gcengine* engine, void (**tracers)(gcengine*, void*, void (*)(
 }
 
 static inline
-void addTenure(gcengine* engine, gcinfo info) {
+void tracking_addTenure(gcengine* engine, gcinfo info) {
     engine->tracking.num_objects_in_tenure += 1;
     engine->tracking.size_objects_in_tenure += sizeofObj(info);
 }
 static inline
-void subTenure(gcengine* engine, gcinfo info) {
+void tracking_subTenure(gcengine* engine, gcinfo info) {
     engine->tracking.num_objects_in_tenure -= 1;
     engine->tracking.size_objects_in_tenure -= sizeofObj(info);
 }
@@ -237,9 +289,19 @@ int bmalloc64(uint64_t* registry_p) {
 //If the block cannot allocate any more, then NULL is returned.
 //The block is updated accordingly, but the data held by the pointer is not initialized.
 static
-gc* block_alloc(objblock* block) {
+gc* objblock_alloc(objblock* block) {
     int ix = bmalloc64(&block->registry);
     return 0 <= ix ? objFromBlock(block, ix) : NULL;
+}
+
+static inline
+gcroot* rootblock_alloc(rootblock* block) {
+    for (int i = 0; i < rootblock_size; ++i) {
+        if (block->roots[i].rootslot == NULL) {
+            return &block->roots[i];
+        }
+    }
+    return NULL;
 }
 
 //Allocate a new gc pointer in the context of the passed engine.
@@ -248,18 +310,41 @@ static
 gc* objring_alloc(objring* ring) {
     objblock* block = ring->current;
     for (;;) {
-        gc* new = block_alloc(block);
+        gc* new = objblock_alloc(block);
         if (new) {
             return new;
         }
         else {
-            if (block == ring->last_collect) {
+            if (block->next_block == ring->last_collect) {
                 objblock* new_block = create_objblock();
                 if (!new_block) {
                     return NULL;
                 }
                 block->next_block = new_block;
                 new_block->next_block = ring->last_collect;
+            }
+            block = ring->current = block->next_block;
+        }
+    }
+}
+
+static
+gcroot* rootring_alloc(rootring* ring) {
+    rootblock* start = ring->current;
+    rootblock* block = start;
+    for (;;) {
+        gcroot* new = rootblock_alloc(block);
+        if (new) {
+            return new;
+        }
+        else {
+            if (block->next_block == start) {
+                rootblock* new_block = create_rootblock();
+                if (!new_block) {
+                    return NULL;
+                }
+                block->next_block = new_block;
+                new_block->next_block = start;
             }
             block = ring->current = block->next_block;
         }
@@ -303,7 +388,17 @@ void traceobj_major(gcengine* engine, gc* obj) {
 // After calling this, all unmarked objects are known unreachable.
 static
 void traceengine_major(gcengine* engine) {
-    traceobj_major(engine, engine->root);
+    rootblock* start = engine->allroots.current;
+    rootblock* block = start;
+    do {
+        for (int i = 0; i < rootblock_size; ++i) {
+            if (block->roots[i].rootslot) {
+                traceobj_major(engine, block->roots[i].rootslot);
+            }
+        }
+
+        block = block->next_block;
+    } while (block != start);
 }
 
 //TODO a babytrace, which also ignores objects outside of the nursery
@@ -317,13 +412,13 @@ void traceengine_major(gcengine* engine) {
 static inline
 void cleanup_block(gcengine* engine, objblock* block) {
     uint64_t registry = block->registry;
-    for (int i = 0; i < block_size; ++i) {
+    for (int i = 0; i < objblock_size; ++i) {
         gc* obj = objFromBlock(block, i);
         //FIXME the following assumes the object is in tenure space
         if (isUsed(registry, i) && !isMarked(obj)) {
             cleanup_tenureobj(engine->finalizers, obj);
             registry = clrUsed(registry, i);
-            subTenure(engine, obj->info);
+            tracking_subTenure(engine, obj->info);
         }
         else {
             clrMarked(obj);
@@ -343,7 +438,7 @@ void cleanupengine_major(gcengine* engine) {
     objblock* last_block = NULL;
     do {
         cleanup_block(engine, block);
-        if (block->registry == emptyRegistry && last_block != NULL) {
+        if (block->registry == emptyObjRegistry && last_block != NULL) {
             last_block->next_block = block->next_block;
             free(block);
             block = last_block->next_block;
@@ -372,6 +467,10 @@ void gccollect_major(gcengine* engine) {
 //------------------------------------
 // User Data Allocation
 
+size_t gcsizeof(gcinfo info) {
+    return sizeofObj(info);
+}
+
 // Obtain a fresh pointer in tenured space.
 // If no such pointer can be created, return NULL.
 static
@@ -387,7 +486,7 @@ gc* tenure_alloc(gcengine* engine, gcinfo info) {
     }
     obj->data_p = data_p;
     obj->info = info;
-    addTenure(engine, info);
+    tracking_addTenure(engine, info);
     return obj;
 }
 
@@ -418,13 +517,14 @@ gc* gcgive(gcengine* engine, void* raw_data, gcinfo info) {
     }
     obj->data_p = raw_data;
     obj->info = info;
-    addTenure(engine, info);
+    tracking_addTenure(engine, info);
     return obj;
 }
 
-//TODO void* gctake(gc* obj)
-//the opposite of gcgive
-//the engine forgets about the object, and its underlying data is returned
+// The opposite of gcgive.
+// The engine forgets about the object, and its underlying data is returned.
+// BUT! What if you take the object while it is reachable?
+// void* gctake(gcengine* engine, gc* obj)
 
 //------------------------------------
 // User Data Manipulation
@@ -434,11 +534,17 @@ gc** gcsubobj(gc* obj, size_t subobjix) {
     return (gc**)obj->data_p + subobjix;
 }
 
-// Return a pointer to the unboxed data of a fixed-format gc-managed object.
+// Return a pointer to the unboxed data of a fixed-format gc-managed object,
+// or all the data of a custom-format object.
 // The returned pointer becomes stale after any call to `gcalloc` with the same engine that manages this handle.
 // Thus, it is best to run this without storing it for very long: either do your calculations or update, then get out of the way.
 void* gcraw(gc* obj) {
-    return (gc**)obj->data_p + obj->info.as.fixed.num_subobjs;
+    if (isCustomFormat(obj->info)) {
+        return obj->data_p;
+    }
+    else {
+        return (gc**)obj->data_p + obj->info.as.fixed.num_subobjs;
+    }
 }
 
 // Return the length of a fixed-format managed array.
@@ -447,12 +553,12 @@ size_t arrlen(gc* obj) {
     return obj->info.as.fixed.arrlen;
 }
 
-// Return a subobject (as `gcsubobj`) of the `arrix`th object in a managed array.
+// Return a subobject (as `gcsubobj`) of the `arrix`th object in a fixed-format managed array.
 gc** gcarrsubobj(gc* obj, size_t arrix, size_t subobjix) {
     return (gc**)(obj->data_p + arrix * sizeofObjElem(obj->info)) + subobjix;
 }
 
-// Return the unboxed data (as `gcunbox`) of the `arrix`th object in a managed array.
+// Return the unboxed data (as `gcunbox`) of the `arrix`th object in a fixed-format managed array.
 void* gcarrraw(gc* obj, size_t arrix) {
     return (gc**)(obj->data_p + arrix * sizeofObjElem(obj->info)) + obj->info.as.fixed.num_subobjs;
 }
@@ -460,7 +566,18 @@ void* gcarrraw(gc* obj, size_t arrix) {
 //------------------------------------
 // Root Management
 
-//DEPRECATED
-void setroot(gcengine* engine, gc* new_root) {
-    engine->root = new_root;
+// Allocate a root slot from the passed engine and initialize it.
+// The tracer won't follow NULL objects, so passing NULL is acceptable.
+gcroot* new_gcroot(gcengine* engine, gc* new_root) {
+    gcroot* new = rootring_alloc(&engine->allroots);
+    new->rootslot = new_root;
+    return new;
+}
+
+void set_gcroot(gcroot* rootslot, gc* new_root) {
+    rootslot->rootslot = new_root;
+}
+
+void free_gcroot(gcroot* rootslot) {
+    rootslot->rootslot = NULL;
 }
