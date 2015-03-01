@@ -53,7 +53,16 @@ gcinfo mk_gcinfo_arr(size_t arrlen, size_t num_subobjs, size_t num_unboxed_bytes
 gcinfo mk_gcinfo_obj(size_t num_subobjs, size_t num_unboxed_bytes, size_t finalizer_offset) {
     return mk_gcinfo_arr(1, num_subobjs, num_unboxed_bytes, finalizer_offset);
 }
-//TODO gcinfo mk_gcinfo_custom(void (*trace)(gcengine*, void*, void (*recurse)(gcengine*, gc*)), size_t objsize, void (*finalize)(void*))
+gcinfo mk_gcinfo_custom(size_t objsize, size_t tracer_offset, size_t finalizer_offset) {
+    gcinfo out;
+    out.as.custom.finalizer_offset = finalizer_offset;
+    out.as.custom.tracer_offset = tracer_offset;
+    out.as.custom.objsize = objsize;
+    out.as.fixed.format = FIXED;
+    out.as.fixed.mark = UNMARKED;
+    return out;
+
+}
 
 // Compute the size of one element of a fixed-format managed array.
 static inline

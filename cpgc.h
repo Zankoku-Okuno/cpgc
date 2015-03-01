@@ -31,6 +31,7 @@ void* gcarrraw(gc* obj, size_t arrix);
 
 gcinfo mk_gcinfo_obj(size_t num_subobjs, size_t num_unboxed_bytes, size_t finalizer_offset);
 gcinfo mk_gcinfo_arr(size_t arrlen, size_t num_subobjs, size_t num_unboxed_bytes, size_t finalizer_offset);
+gcinfo mk_gcinfo_custom(size_t objsize, size_t tracer_offset, size_t finalizer_offset);
 size_t gcsizeof(gcinfo);
 
 void setgcFinalizers(gcengine*, size_t num_finalizers, void (**finalizers)(void*));

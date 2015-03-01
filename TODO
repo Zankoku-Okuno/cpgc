@@ -20,7 +20,7 @@ Platform Dependence
 	assumption of 64-bit machine
 	use of gcc __builtin_ctzll
 	assuming aligned to whatever malloc aligns to is good enough
-		this assumption could get worse with the nursery
+		this assumption could be worse in the nursery
 
 Performance
 	choose gcptrs block to fit nicely
