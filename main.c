@@ -79,8 +79,8 @@ int main(int argc, char **argv) {
 
     if (testing_basic_engine) {
     printf("RUN: basic engine...\n");
-        gcinfo int_info = mk_gcinfo_obj(0, sizeof(int), NULL);
-        gcinfo intp_info = mk_gcinfo_obj(1, 0, NULL);
+        gcinfo int_info = mk_gcinfo_obj(0, sizeof(int), nogcFinalizer());
+        gcinfo intp_info = mk_gcinfo_obj(1, 0, nogcFinalizer());
         gcengine* e = create_gcengine();
         uint64_t* reg = &e->allobjs.current->registry;
         if (*reg != ~(uint64_t)0) {
@@ -150,8 +150,8 @@ int main(int argc, char **argv) {
 
     if (testing_arrays) {
     printf("RUN: arrays...\n");
-        gcinfo int_info = mk_gcinfo_obj(0, sizeof(int), NULL);
-        gcinfo intpx4_info = mk_gcinfo_arr(4, 1, 0, NULL);
+        gcinfo int_info = mk_gcinfo_obj(0, sizeof(int), nogcFinalizer());
+        gcinfo intpx4_info = mk_gcinfo_arr(4, 1, 0, nogcFinalizer());
 
         gcengine* e = create_gcengine();
         gc* i1 = gcalloc(e, int_info);

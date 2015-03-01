@@ -23,7 +23,7 @@ typedef enum { FIXED = 0, CUSTOM = 1 } info_format;
 struct gcinfo {
     union {
         struct {
-            size_t finalizer_table_offset : 16;
+            size_t finalizer_offset : 16;
             size_t num_raw_bytes : 16;
             size_t arrlen : 16;
             size_t num_subobjs : 14;
@@ -31,8 +31,8 @@ struct gcinfo {
             mark mark : 1;
         } fixed;
         struct {
-            size_t finalizer_table_offset : 16;
-            size_t tracer_table_offset : 16;
+            size_t finalizer_offset : 16;
+            size_t tracer_offset : 16;
             size_t objsize : 30;
             info_format format : 1;
             mark mark : 1;
@@ -40,9 +40,9 @@ struct gcinfo {
     } as;
 };
 
-gcinfo mk_gcinfo_arr(size_t arrlen, size_t num_subobjs, size_t num_unboxed_bytes, void (*finalize)(void*)) {
+gcinfo mk_gcinfo_arr(size_t arrlen, size_t num_subobjs, size_t num_unboxed_bytes, size_t finalizer_offset) {
     gcinfo out;
-    out.as.fixed.finalizer_table_offset = 0;
+    out.as.fixed.finalizer_offset = finalizer_offset;
     out.as.fixed.num_raw_bytes = num_unboxed_bytes;
     out.as.fixed.arrlen = arrlen;
     out.as.fixed.num_subobjs = num_subobjs;
@@ -50,8 +50,8 @@ gcinfo mk_gcinfo_arr(size_t arrlen, size_t num_subobjs, size_t num_unboxed_bytes
     out.as.fixed.mark = UNMARKED;
     return out;
 }
-gcinfo mk_gcinfo_obj(size_t num_subobjs, size_t num_unboxed_bytes, void (*finalize)(void*)) {
-    return mk_gcinfo_arr(1, num_subobjs, num_unboxed_bytes, finalize);
+gcinfo mk_gcinfo_obj(size_t num_subobjs, size_t num_unboxed_bytes, size_t finalizer_offset) {
+    return mk_gcinfo_arr(1, num_subobjs, num_unboxed_bytes, finalizer_offset);
 }
 //TODO gcinfo mk_gcinfo_custom(void (*trace)(gcengine*, void*, void (*recurse)(gcengine*, gc*)), size_t objsize, void (*finalize)(void*))
 
@@ -107,9 +107,9 @@ struct engine_info {
 struct gcengine {
     objring allobjs;
     rootring allroots;
-    gc* root; //DELME
-    void (**tracers)(gcengine*, void*, void (*)(gcengine*, gc*));
+
     void (**finalizers)(void*);
+    void (**tracers)(gcengine*, void*, void (*)(gcengine*, gc*));
 
     engine_info tracking;
 };
@@ -130,7 +130,7 @@ void clrMarked(gc* obj) {
 
 static inline
 void cleanup_tenureobj(void (**finalizers)(void*), gc* obj) {
-    size_t offset = obj->info.as.fixed.finalizer_table_offset;
+    size_t offset = obj->info.as.fixed.finalizer_offset;
     if (offset) {
         finalizers[offset](obj->data_p);
     }
@@ -239,7 +239,6 @@ gcengine* create_gcengine() {
     gcengine* new = malloc(sizeof(gcengine));
     new->allobjs = create_objring();
     new->allroots = create_rootring();
-    new->root = NULL; //DELME
     new->tracking.num_objects_in_tenure = new->tracking.size_objects_in_tenure = 0;
     return new;
 }
@@ -249,11 +248,37 @@ void destroy_gcengine(gcengine* engine) {
     free(engine);
 }
 
-void setgcFinalizers(gcengine* engine, void (**finalizers)(void*)) {
+void setgcFinalizers(gcengine* engine, size_t num_finalizers, void (**finalizers)(void*)) {
     engine->finalizers = finalizers;
+}
+size_t nogcFinalizer_val = 0;
+size_t findgcFinalizer(void (*finalizer)(void*), size_t num_finalizers, void (**finalizers)(void*)) {
+    if (!finalizer | !finalizers) {
+        return nogcFinalizer_val;
+    }
+    for (int i = 1; i < num_finalizers; ++i) {
+        if (finalizer == finalizers[i]) {
+            return i;
+        }
+    }
+    return nogcFinalizer_val;
 }
 void setgcTracers(gcengine* engine, void (**tracers)(gcengine*, void*, void (*)(gcengine*, gc*))) {
     engine->tracers = tracers;
+}
+size_t fixedgcTracer_val = 0;
+size_t findgcTracer(void (*tracer)(gcengine*, void*, void (*)(gcengine*, gc*)),
+                    size_t num_tracers,
+                    void (**tracers)(gcengine*, void*, void (*)(gcengine*, gc*))) {
+    if (!tracer | !tracers) {
+        return fixedgcTracer_val;
+    }
+    for (int i = 1; i < num_tracers; ++i) {
+        if (tracer == tracers[i]) {
+            return i;
+        }
+    }
+    return fixedgcTracer_val;
 }
 
 static inline
@@ -364,7 +389,7 @@ void traceobj_major(gcengine* engine, gc* obj) {
     else {
         setMarked(obj);
         if (isCustomFormat(obj->info)) {
-            size_t offset = obj->info.as.custom.tracer_table_offset;
+            size_t offset = obj->info.as.custom.tracer_offset;
             void (*trace)(gcengine*, void*, void (*)(gcengine*, gc*)) = engine->tracers[offset];
             trace(engine, obj->data_p, traceobj_major);
         }

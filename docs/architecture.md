@@ -88,9 +88,11 @@ okay, basically:
 	without mutation, objects can only point to older objects
 	whenever you modify an object's subobject, the subobject might be newer
 	so the problem is: if a tenured object is modified to point to a baby object, but the baby is not reachable through only baby objects, we've got a problem
-	when you cannot prove that the replacement subobject is older than the current, you add the replacement to the referenced list
+	further, if a tenured object has a subobject replaced to a baby, then to a tenure, there's not need to trace the baby as a referent
+	when you cannot prove that the replacement subobject is older than the current, you add the main object to the referenced list
+	It's up to the user to make sure they do this
 	on minor collection, the reference list is also traced (as if they were roots), then emptied
-	it's up to the user, since objects might have arbitrary layouts now, though for fixed layout we can layer some utilities
+	The best way to do this is to write a special trace which doesn't mark or short-circuit (except on NULL) but then calls normal trace funtions
 
 
 Profiling
